@@ -1,0 +1,32 @@
+seed: 11
+train_split_ratio: 0.8
+max_len_text: 128
+train_batch_size: 4
+validation_batch_size: 4
+test_batch_size: 1
+embedding_dim: 512
+image_embedding_dim: 512
+text_embedding_dim: 512
+cl_loss_temperature: 1.0
+num_epochs: 5
+
+use_lr_scheduler: 1
+apply_gradient_clipping: 1
+
+read_write_gpu_rank: 0
+
+train_bert_topic: false
+num_selected_topics: 40
+
+model_to_use: model_crisis_mmd_vision_text_pipeline
+
+crisis_mmd_like_dataset_to_use: crisis_mmd_dataset
+
+# Event name to use for test/validation split (excluded from training)
+test_event_name: <add_test_event_name>
+
+run_parallel: false
+use_dummy_rank_for_parallel_enabled_model: true
+
+transformer_text_context_length: 128
+vocab_size: 50000

@@ -1,6 +1,5 @@
 <div align="center">
 
-[IMAGE REQUIRED - CAFuNet architecture banner/overview figure from the paper (Figure 1)]
 
 # CAFuNet: Context-Aligned Fusion Network for Multimodal Crisis Informatics
 
@@ -38,7 +37,9 @@ Experiments on **CrisisMMD** and **TSEqD** benchmarks show that CAFuNet consiste
 
 ## Architecture
 
-[IMAGE REQUIRED - Figure 1 from the paper showing the full CAFuNet architecture diagram with parallel encoders, topic conditioning, CGC module, and PBBF fusion]
+<p align="center">
+  <img src="./architecture.png" width="90%" />
+</p>
 
 CAFuNet processes multimodal inputs (text + image) through parallel encoder streams. The pipeline consists of:
 
@@ -298,8 +299,6 @@ Each component contributes meaningful gains: TGP (+2.78 F1), CGC (+1.33 F1), PBB
 
 ### Fusion Strategy Comparison
 
-[IMAGE REQUIRED - Figure 2 from the paper showing bar chart comparing Early Fusion, Late Fusion, Cross-Attention Fusion, and PBBF on Accuracy and F1]
-
 | Fusion Method | Accuracy | F1 |
 |:--------------|:--------:|:--:|
 | Early Fusion (Concatenation) | 86.91 | 86.88 |
@@ -328,13 +327,9 @@ Each component contributes meaningful gains: TGP (+2.78 F1), CGC (+1.33 F1), PBB
 
 ### Sensitivity to Topic Count (N_t)
 
-[IMAGE REQUIRED - Figure 3 from the paper showing line plot of performance vs number of topics, peaking at N_t = 10]
-
 Performance peaks at **N_t = 10** topics and remains stable across a moderate range, demonstrating robustness to this hyperparameter.
 
 ### Computational Efficiency
-
-[IMAGE REQUIRED - Figure 5 from the paper showing computational complexity comparison across baselines]
 
 CAFuNet contains approximately **150M parameters** (comparable to standard multimodal encoders) with an inference latency of **~22 ms** per batch (batch size 32) on a single GPU — significantly faster than autoregressive VLMs (>200 ms).
 

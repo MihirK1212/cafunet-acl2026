@@ -1,21 +1,10 @@
 import torch
 import torch.nn as nn
-from typing import Dict
-import torch
-import torch.nn as nn
+import torch.nn.functional as F
 from torchvision import transforms
 from PIL import Image
+from collections import OrderedDict
 from transformers import AutoTokenizer
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torchvision import transforms
-from collections import OrderedDict
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torchvision import transforms
-from collections import OrderedDict
 
 from utils import config_utils, gpu_utils
 from data.schemas import (
@@ -24,9 +13,8 @@ from data.schemas import (
     TokenizedTextInputsSchema,
 )
 import constants
-from transformers import AutoTokenizer
 
-from ..fuzz_feature_extractor import FuzzyFeatureExtractor
+from .fuzz_feature_extractor import FuzzyFeatureExtractor
 
 config = config_utils.load_config()
 
@@ -61,9 +49,13 @@ class ResidualAttentionBlock(nn.Module):
         )
         self.ln_2 = LayerNorm(d_model)
 
-    def forward(self, x: torch.Tensor, fuzzy_tokens: torch.Tensor | None):
-        if fuzzy_tokens is not None:
-            x = torch.cat([x, fuzzy_tokens], dim=0)
+    def forward(self, x: torch.Tensor, ffe: FuzzyFeatureExtractor | None = None):
+        # CGC at last layer (Eq. 8): x = x ⊙ (1 + G(x))
+        if ffe is not None:
+            x_batch = x.permute(1, 0, 2)
+            gating_score = ffe(x_batch)
+            x = (x_batch * (1 + gating_score)).permute(1, 0, 2)
+
         x = (
             x
             + self.attn(self.ln_1(x), self.ln_1(x), self.ln_1(x), need_weights=False)[0]
@@ -79,9 +71,9 @@ class Transformer(nn.Module):
             [ResidualAttentionBlock(width, heads) for _ in range(layers)]
         )
 
-    def forward(self, x: torch.Tensor, fuzzy_tokens: torch.Tensor):
-        for ind, block in enumerate(self.resblocks):
-            x = block(x, fuzzy_tokens if (ind == (len(self.resblocks) - 1)) else None)
+    def forward(self, x: torch.Tensor, ffe: FuzzyFeatureExtractor | None = None):
+        for block in self.resblocks:
+            x = block(x, ffe)
         return x
 
 
@@ -105,6 +97,7 @@ class VisionEncoder(nn.Module):
             torch.randn((image_size // patch_size) ** 2 + 1, width) * width**-0.5
         )
 
+        # Topic Alignment Projector (TAP): F_TAP: R^{DT} -> R^{DV}  (Eq. 2)
         self.topic_modality_projection = nn.Sequential(
             nn.Linear(text_embedding_dim, width),
             nn.ReLU(),
@@ -122,6 +115,7 @@ class VisionEncoder(nn.Module):
             ]
         )
 
+        # CGC gating function (Section 4.3)
         self.ffe = FuzzyFeatureExtractor(
             mu_params={"mu": 0.0, "sigma": 1.0},
             sigma_params={"alpha": 1.0, "beta": 0.0},
@@ -137,27 +131,27 @@ class VisionEncoder(nn.Module):
             .to(gpu_utils.get_device())
             .to(torch.float32)
         )
-        x = images
 
-        x = self.conv1(x)
-        x = x.flatten(2).permute(2, 0, 1)
-        class_embedding_expanded = self.class_embedding.unsqueeze(0).expand(
-            x.shape[1], -1
-        )
-        class_embedding_expanded = class_embedding_expanded.unsqueeze(0)
-        x = torch.cat([class_embedding_expanded, x], dim=0)
-        x = x + self.positional_embedding.unsqueeze(1)
+        x = self.conv1(images)
+        x = x.flatten(2).permute(2, 0, 1)                          # (NV, batch, width)
+        cls_exp = self.class_embedding.unsqueeze(0).expand(x.shape[1], -1).unsqueeze(0)
+        x = torch.cat([cls_exp, x], dim=0)                         # (NV+1, batch, width)
+        x = x + self.positional_embedding.unsqueeze(1)              # add pos embeddings
 
-        # image_topic_embeddings = self.topic_modality_projection(topic_embeddings)
-        # x = torch.cat((x.permute(1, 0, 2), image_topic_embeddings), dim=1).permute(
-        #     1, 0, 2
-        # )
+        # TAP: project topics into visual space  (Eq. 2)
+        image_topic_embeddings = self.topic_modality_projection(topic_embeddings)  # (batch, Nt, width)
+        num_topics = image_topic_embeddings.shape[1]
 
-        fuzzified_input = self.ffe(x.permute(1, 0, 2)).permute(1, 0, 2)
+        # Prepend projected topics to patch sequence  (Eq. 3): E'_V = [T̃ ; E_V]
+        x = x.permute(1, 0, 2)                                     # (batch, NV+1, width)
+        x = torch.cat((image_topic_embeddings, x), dim=1)          # (batch, Nt+NV+1, width)
 
+        x = x.permute(1, 0, 2)                                     # (Nt+NV+1, batch, width)
         x = self.ln_pre(x)
-        x = self.transformer(x, fuzzified_input)
-        x = self.ln_post(x[0])
+        # CGC (Eq. 8b) is applied at the last transformer layer
+        x = self.transformer(x, self.ffe)
+
+        x = self.ln_post(x[num_topics])                             # (batch, width)
         return x @ self.proj
 
 
@@ -177,18 +171,13 @@ class TextEncoder(nn.Module):
             torch.randn(context_length, width) * width**-0.5
         )
 
-        self.topic_projection = nn.Sequential(
-            nn.Linear(width, width),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-        )
-
         self.transformer = Transformer(width, layers, heads)
         self.ln_final = LayerNorm(width)
         self.text_projection = nn.Parameter(
             torch.randn(width, output_dim) * width**-0.5
         )
 
+        # CGC gating function (Section 4.3)
         self.ffe = FuzzyFeatureExtractor(
             mu_params={"mu": 0.0, "sigma": 1.0},
             sigma_params={"alpha": 1.0, "beta": 0.0},
@@ -197,17 +186,18 @@ class TextEncoder(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, topic_embeddings: torch.Tensor):
-        x = self.token_embedding(x) + self.positional_embedding.unsqueeze(0)
+        x = self.token_embedding(x) + self.positional_embedding.unsqueeze(0)  # (batch, NT, width)
+        # (batch, Nt, width)
+        num_topics = topic_embeddings.shape[1]
 
-        text_topic_embeddings = self.topic_projection(topic_embeddings)
-        text_topic_embeddings = topic_embeddings
-        x = torch.cat((x, text_topic_embeddings), dim=1)
-        x = x.permute(1, 0, 2)
+        # Prepend topics directly to token sequence  (Eq. 1): E'_T = [T ; E_T]
+        x = torch.cat((topic_embeddings, x), dim=1)                            # (batch, Nt+NT, width)
 
-        fuzzified_input = self.ffe(x.permute(1, 0, 2)).permute(1, 0, 2)
+        x = x.permute(1, 0, 2)                                                 # (Nt+NT, batch, width)
+        # CGC (Eq. 8a) is applied at the last transformer layer
+        x = self.transformer(x, self.ffe).permute(1, 0, 2)                     # (batch, Nt+NT, width)
 
-        x = self.transformer(x, fuzzified_input).permute(1, 0, 2)
-        x = self.ln_final(x[:, -1, :])
+        x = self.ln_final(x[:, num_topics, :])                                 # (batch, width)
         return x @ self.text_projection
 
 
@@ -240,7 +230,6 @@ class TextVisionFuser(nn.Module):
         image_paths = data_item.metadata["image_path"]
         captions = data_item.metadata["caption"]
 
-        # Text processing
         tokenized_texts = []
         for caption in captions:
             tokenized_texts.append(
@@ -263,7 +252,6 @@ class TextVisionFuser(nn.Module):
         assert tokenized_texts.shape == (len(captions), config.get('transformer_text_context_length')), tokenized_texts.shape
 
         image_features = self.vision_encoder(image_paths, topic_embeddings)
-
         text_features = self.text_encoder(tokenized_texts, topic_embeddings)
 
         return image_features, text_features

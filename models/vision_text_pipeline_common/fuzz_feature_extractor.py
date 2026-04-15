@@ -1,101 +1,50 @@
 import torch
-import torch.nn.functional as F
-import math
+import torch.nn as nn
 
-class FuzzyFeatureExtractor(torch.nn.Module):
+
+class FuzzyFeatureExtractor(nn.Module):
+    """Context-Gated Calibration (CGC) gating score computation.
+
+    Computes G(h) = w_G·μ_G(h) + w_S·μ_S(h) + w_T·μ_T(h) + b  (Eq. 7)
+    All membership function parameters and combination weights are learnable.
+    """
+
     def __init__(self, mu_params, sigma_params, trapezoidal_params, weights):
         super().__init__()
-        self.mu = mu_params['mu']
-        self.sigma = mu_params['sigma']
-        self.alpha = sigma_params['alpha']
-        self.beta = sigma_params['beta']
-        self.a = trapezoidal_params['a']
-        self.b = trapezoidal_params['b']
-        self.c = trapezoidal_params['c']
-        self.d = trapezoidal_params['d']
-        self.w_mu = weights['w_mu']
-        self.w_sigma = weights['w_sigma']
-        self.w_T = weights['w_T']
-        self.b_weight = weights['b']
+        self.mu = nn.Parameter(torch.tensor(float(mu_params['mu'])))
+        self.sigma = nn.Parameter(torch.tensor(float(mu_params['sigma'])))
+        self.alpha = nn.Parameter(torch.tensor(float(sigma_params['alpha'])))
+        self.beta = nn.Parameter(torch.tensor(float(sigma_params['beta'])))
+        self.a = nn.Parameter(torch.tensor(float(trapezoidal_params['a'])))
+        self.b = nn.Parameter(torch.tensor(float(trapezoidal_params['b'])))
+        self.c = nn.Parameter(torch.tensor(float(trapezoidal_params['c'])))
+        self.d = nn.Parameter(torch.tensor(float(trapezoidal_params['d'])))
+        self.w_mu = nn.Parameter(torch.tensor(float(weights['w_mu'])))
+        self.w_sigma = nn.Parameter(torch.tensor(float(weights['w_sigma'])))
+        self.w_T = nn.Parameter(torch.tensor(float(weights['w_T'])))
+        self.b_weight = nn.Parameter(torch.tensor(float(weights['b'])))
 
     def gaussian(self, x):
-        return torch.exp(-0.5 * ((x - self.mu) / self.sigma) ** 2) / (self.sigma * torch.sqrt(torch.tensor(2 * torch.pi, device=x.device)))
+        # Eq. 4: μ_G(h) = exp(-(h-μ)² / (2σ²))
+        sigma = self.sigma.abs().clamp(min=1e-8)
+        return torch.exp(-0.5 * ((x - self.mu) / sigma) ** 2)
 
-    def sigmoid(self, x):
-        return 1 / (1 + torch.exp(-self.alpha * (x - self.beta)))
+    def sigmoid_mf(self, x):
+        # Eq. 5: μ_S(h) = 1 / (1 + exp(-α(h-β)))
+        return torch.sigmoid(self.alpha * (x - self.beta))
 
     def trapezoidal(self, x):
-        zeros = torch.zeros_like(x)
-        ones = torch.ones_like(x)
+        # Eq. 6: μ_T(h) = max(min((h-a)/(b-a), 1, (d-h)/(d-c)), 0)
+        eps = 1e-8
+        rise = (x - self.a) / (self.b - self.a + eps)
+        fall = (self.d - x) / (self.d - self.c + eps)
+        return torch.clamp(torch.min(torch.min(rise, fall), torch.ones_like(x)), min=0.0)
 
-        cond1 = (x <= self.a)
-        cond2 = (self.a < x) & (x <= self.b)
-        cond3 = (self.b < x) & (x <= self.c)
-        cond4 = (self.c < x) & (x <= self.d)
-        cond5 = (x > self.d)
-
-        out = torch.where(cond1, zeros,
-              torch.where(cond2, (x - self.a) / (self.b - self.a),
-              torch.where(cond3, ones,
-              torch.where(cond4, (self.d - x) / (self.d - self.c),
-                          zeros))))
-        return out
-
-    def forward(self, I):
-        I_mu = self.gaussian(I)
-        I_sigma = self.sigmoid(I)
-        I_T = self.trapezoidal(I)
-
-        I_fuzzy = self.w_mu * I_mu + self.w_sigma * I_sigma + self.w_T * I_T + self.b_weight
-        return I_fuzzy
-
-
-# class FuzzyFeatureExtractor(torch.nn.Module):
-#     def __init__(self, mu_params, sigma_params, trapezoidal_params, weights):
-#         super().__init__()
-#         self.mu = torch.nn.Parameter(torch.tensor(mu_params['mu'], dtype=torch.float32))
-#         self.sigma = torch.nn.Parameter(torch.tensor(mu_params['sigma'], dtype=torch.float32))
-
-#         self.alpha = torch.nn.Parameter(torch.tensor(sigma_params['alpha'], dtype=torch.float32))
-#         self.beta = torch.nn.Parameter(torch.tensor(sigma_params['beta'], dtype=torch.float32))
-
-#         self.a = torch.nn.Parameter(torch.tensor(trapezoidal_params['a'], dtype=torch.float32))
-#         self.b = torch.nn.Parameter(torch.tensor(trapezoidal_params['b'], dtype=torch.float32))
-#         self.c = torch.nn.Parameter(torch.tensor(trapezoidal_params['c'], dtype=torch.float32))
-#         self.d = torch.nn.Parameter(torch.tensor(trapezoidal_params['d'], dtype=torch.float32))
-
-#         self.w_mu = torch.nn.Parameter(torch.tensor(weights['w_mu'], dtype=torch.float32))
-#         self.w_sigma = torch.nn.Parameter(torch.tensor(weights['w_sigma'], dtype=torch.float32))
-#         self.w_T = torch.nn.Parameter(torch.tensor(weights['w_T'], dtype=torch.float32))
-#         self.b_weight = torch.nn.Parameter(torch.tensor(weights['b'], dtype=torch.float32))
-
-#     def gaussian(self, x):
-#         return torch.exp(-0.5 * ((x - self.mu) / self.sigma) ** 2) / (self.sigma * math.sqrt(2 * math.pi))
-
-#     def sigmoid(self, x):
-#         return 1 / (1 + torch.exp(-self.alpha * (x - self.beta)))
-
-#     def trapezoidal(self, x):
-#         zeros = torch.zeros_like(x)
-#         ones = torch.ones_like(x)
-
-#         cond1 = (x <= self.a)
-#         cond2 = (self.a < x) & (x <= self.b)
-#         cond3 = (self.b < x) & (x <= self.c)
-#         cond4 = (self.c < x) & (x <= self.d)
-#         cond5 = (x > self.d)
-
-#         out = torch.where(cond1, zeros,
-#               torch.where(cond2, (x - self.a) / (self.b - self.a),
-#               torch.where(cond3, ones,
-#               torch.where(cond4, (self.d - x) / (self.d - self.c),
-#                           zeros))))
-#         return out
-
-#     def forward(self, I):
-#         I_mu = self.gaussian(I)
-#         I_sigma = self.sigmoid(I)
-#         I_T = self.trapezoidal(I)
-
-#         I_fuzzy = self.w_mu * I_mu + self.w_sigma * I_sigma + self.w_T * I_T + self.b_weight
-#         return I_fuzzy
+    def forward(self, h):
+        # Eq. 7: G(h) = w_G·μ_G(h) + w_S·μ_S(h) + w_T·μ_T(h) + b
+        return (
+            self.w_mu * self.gaussian(h)
+            + self.w_sigma * self.sigmoid_mf(h)
+            + self.w_T * self.trapezoidal(h)
+            + self.b_weight
+        )

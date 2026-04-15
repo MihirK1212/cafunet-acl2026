@@ -40,6 +40,7 @@ FIELD_READ_WRITE_GPU_RANK = "read_write_gpu_rank"
 FIELD_VOCAB_SIZE = "vocab_size"
 FIELD_TRANSFORMER_TEXT_CONTEXT_LENGTH = "transformer_text_context_length"
 
+
 PATH_CONFIG_FILE = "config.yaml"
 
 DEVICE_CPU = "cpu"

@@ -8,7 +8,7 @@ embedding_dim: 512
 image_embedding_dim: 512
 text_embedding_dim: 512
 cl_loss_temperature: 1.0
-num_epochs: 5
+num_epochs: 10
 
 use_lr_scheduler: 1
 apply_gradient_clipping: 1

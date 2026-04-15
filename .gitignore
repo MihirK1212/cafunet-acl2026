@@ -1,3 +1,4 @@
 myenv/
 multimodal-disaster-datasets/
 .env
+__pycache__/
